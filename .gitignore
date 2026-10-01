@@ -1,0 +1,8 @@
+node_modules/
+**/node_modules/
+work/
+outputs/ribera-campestre-access-links.csv
+outputs/ribera-campestre-admin-link.txt
+.env
+*.log
+.DS_Store
