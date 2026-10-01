@@ -1,0 +1,39 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Panel de Asamblea - Futuro</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f4f7f6; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 100%; max-width: 500px; text-align: center; }
+        h1 { color: #2c3e50; margin-bottom: 10px; }
+        .status { font-weight: bold; padding: 10px; border-radius: 6px; margin: 20px 0; display: inline-block; }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        p { color: #555; line-height: 1.5; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Asamblea en Línea</h1>
+        <div id="status" class="status disconnected">VERIFICANDO TOKEN...</div>
+        <p id="info">Analizando credenciales de administrador...</p>
+    </div>
+    <script>
+        const hash = window.location.hash;
+        const token = hash.includes('token=') ? hash.split('token=')[1] : null;
+        const statusEl = document.getElementById('status');
+        const infoEl = document.getElementById('info');
+
+        if (!token) {
+            statusEl.className = 'status disconnected';
+            statusEl.textContent = 'ACCESO DENEGADO';
+            infoEl.textContent = 'No se encontró un token de acceso válido en la URL. Asegúrate de usar el enlace completo con #token=...';
+        } else {
+            statusEl.className = 'status connected';
+            statusEl.textContent = 'CONECTADO CORRECTAMENTE';
+            infoEl.textContent = 'Token detectado. El sistema está listo para operar la asamblea.';
+        }
+    </script>
+</body>
+</html>

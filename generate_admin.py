@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 import os
 import json
 import base64
@@ -45,4 +46,5 @@ os.makedirs('outputs', exist_ok=True)
 with open('outputs/ribera-campestre-admin-link.txt', 'w', encoding='utf-8') as f:
     f.write(admin_url)
 
-print('�Enlace listo!')
+print('¡Enlace listo!')
+
