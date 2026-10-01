@@ -1,0 +1,36 @@
+{
+  "name": "votaciones-ph",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0 <25"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "tsx watch backend/server.ts",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.server.json --noEmit && vite build",
+    "start": "tsx backend/server.ts"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "6.1.1",
+    "express": "5.2.1",
+    "jsonwebtoken": "9.0.3",
+    "pg": "8.23.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "socket.io": "4.8.4",
+    "socket.io-client": "4.8.4",
+    "tsx": "^4.20.0",
+    "vite": "8.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/jsonwebtoken": "9.0.10",
+    "@types/node": "22.20.4",
+    "@types/pg": "8.23.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "5.9.3"
+  }
+}
