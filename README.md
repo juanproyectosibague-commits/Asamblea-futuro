@@ -1,325 +1,198 @@
-zlib.js
-=======
+<p align="center">
+  <a href="https://tesseract.projectnaptha.com/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="./docs/images/tesseract_dark.png">
+      <img width="256px" height="256px" alt="Tesseract.js" src="./docs/images/tesseract.png">
+    </picture>
+  </a>
+</p>
 
-[![Build Status](https://travis-ci.org/imaya/zlib.js.png?branch=master)](https://travis-ci.org/imaya/zlib.js)
+![Lint & Test](https://github.com/naptha/tesseract.js/workflows/Node.js%20CI/badge.svg)
+![CodeQL](https://github.com/naptha/tesseract.js/workflows/CodeQL/badge.svg)
+[![Gitpod Ready-to-Code](https://img.shields.io/badge/Gitpod-ready--to--code-blue?logo=gitpod)](https://github.com/naptha/tesseract.js) 
+[![Financial Contributors on Open Collective](https://opencollective.com/tesseractjs/all/badge.svg?label=financial+contributors)](https://opencollective.com/tesseractjs) [![npm version](https://badge.fury.io/js/tesseract.js.svg)](https://badge.fury.io/js/tesseract.js)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/naptha/tesseract.js/graphs/commit-activity)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Code Style](https://badgen.net/badge/code%20style/airbnb/ff5a5f?icon=airbnb)](https://github.com/airbnb/javascript)
+![npm](https://img.shields.io/npm/dm/tesseract.js?label=npm%20downloads)
+![jsDelivr hits (npm)](https://img.shields.io/jsdelivr/npm/hm/tesseract.js?label=jsdelivr%20hits)
 
-[English version](./README.en.md)
+Tesseract.js is a javascript library that gets words in [almost any language](./docs/tesseract_lang_list.md) out of images. ([Demo](http://tesseract.projectnaptha.com/))
 
-zlib.js は ZLIB(RFC1950), DEFLATE(RFC1951), GZIP(RFC1952), PKZIP の JavaScript 実装です。
+Image Recognition
 
+[![fancy demo gif](./docs/images/demo.gif)](http://tesseract.projectnaptha.com)
 
-使い方
-------
+Video Real-time Recognition
 
-zlib.js は必要な機能ごとに分割されています。
-bin ディレクトリから必要なものを利用してください。
+<p align="center">
+  <a href="https://github.com/jeromewu/tesseract.js-video"><img alt="Tesseract.js Video" src="./docs/images/video-demo.gif"></a>
+</p>
 
-- zlib_and_gzip.min.js: ZLIB + GZIP
-    + (Raw)
-        * rawdeflate.js: Raw Deflate
-        * raw.js: Raw Inflate
-    + zlib.min.js: ZLIB Inflate + Deflate
-        * inflate.min.js: ZLIB Inflate
-        * deflate.min.js: ZLIB Deflate
-        * inflate_stream.min.js: ZLIB Inflate (stream mode)
-    + (GZIP)
-        * gzip.min.js: GZIP
-        * gunzip.min.js: GUNZIP
-    + (PKZIP)
-        * zip.min.js ZIP
-        * unzip.min.js UNZIP
-- node-zlib.js: (ZLIB + GZIP for node.js)
+Tesseract.js works in the browser using [webpack](https://webpack.js.org/), esm, or plain script tags with a [CDN](#CDN) and on the server with [Node.js](https://nodejs.org/en/).
+After you [install it](#installation), using it is as simple as:
 
+```javascript
+import { createWorker } from 'tesseract.js';
 
-### 圧縮 (Compress)
-
-#### Raw Deflate
-
-```js
-// plain = Array.<number> or Uint8Array
-var deflate = new Zlib.RawDeflate(plain);
-var compressed = deflate.compress();
+(async () => {
+  const worker = await createWorker('eng');
+  const ret = await worker.recognize('https://tesseract.projectnaptha.com/img/eng_bw.png');
+  console.log(ret.data.text);
+  await worker.terminate();
+})();
 ```
+When recognizing multiple images, users should create a worker once, run `worker.recognize` for each image, and then run `worker.terminate()` once at the end (rather than running the above snippet for every image). 
 
-#### Raw Deflate Option
+## Installation
+Tesseract.js works with a `<script>` tag via local copy or CDN, with webpack via `npm` and on Node.js with `npm/yarn`.
 
-ZLIB Option を参照してください。
-
-
-#### ZLIB
-
-```js
-// plain = Array.<number> or Uint8Array
-var deflate = new Zlib.Deflate(plain);
-var compressed = deflate.compress();
+### CDN
+```html
+<!-- v5 -->
+<script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
 ```
+After including the script the `Tesseract` variable will be globally available and a worker can be created using `Tesseract.createWorker`.
 
-##### ZLIB Option
-
-<code>Zlib.Deflate</code> の第二引数にオブジェクトを渡す事で圧縮オプションを指定する事が出来ます。
-
-```js
-{
-    compressionType: Zlib.Deflate.CompressionType, // 圧縮タイプ
-    lazy: number // lazy matching の閾値
-}
-```
-
-<code>Zlib.Deflate.CompressionType</code> は
-<code>NONE</code>(無圧縮), <code>FIXED</code>(固定ハフマン符号), <code>DYNAMIC</code>(動的ハフマン符号) から選択する事ができます。
-default は <code>DYNAMIC</code> です。
-
-<code>lazy</code> は Lazy Matching の閾値を指定します。
-Lazy Matching とは、LZSS のマッチ長が閾値より低かった場合、次の Byte から LZSS の最長一致を試み、マッチ長の長い方を選択する手法です。
-
-
-#### GZIP
-
-GZIP の実装は現在不完全ですが、ただの圧縮コンテナとして使用する場合には特に問題はありません。
-zlib.js を用いて作成された GZIP の OS は、自動的に UNKNOWN に設定されます。
-
-```js
-// plain = Array.<number> or Uint8Array
-var gzip = new Zlib.Gzip(plain);
-var compressed = gzip.compress();
-```
-
-
-##### GZIP Option
-
-```js
-{
-    deflateOptions: Object, // deflate option (ZLIB Option 参照)
-    flags: {
-        fname: boolean, // ファイル名を使用するか
-        comment: boolean, // コメントを使用するか
-        fhcrc: boolean // FHCRC を使用するか
-    },
-    filename: string, // flags.fname が true のときに書き込むファイル名
-    comment: string // flags.comment が true のときに書き込むコメント
-}
-```
-
-
-#### PKZIP
-
-PKZIP では複数のファイルを扱うため、他のものとは少し使い方が異なります。
-
-```js
-var zip = new Zlib.Zip();
-// plainData1
-zip.addFile(plainData1, {
-    filename: stringToByteArray('foo.txt')
-});
-zip.addFile(plainData2, {
-    filename: stringToByteArray('bar.txt')
-});
-zip.addFile(plainData3, {
-    filename: stringToByteArray('baz.txt')
-});
-var compressed = zip.compress();
-
-function stringToByteArray(str) {
-    var array = new (window.Uint8Array !== void 0 ? Uint8Array : Array)(str.length);
-    var i;
-    var il;
-
-    for (i = 0, il = str.length; i < il; ++i) {
-        array[i] = str.charCodeAt(i) & 0xff;
-    }
-
-    return array;
-}
-```
-
-##### PKZIP Option
-
-filename, comment, extraField は Typed Array が使用可能な場合は必ず Uint8Array を使用してください。
-
-```js
-{
-    filename: (Array.<number>|Uint8Array), // ファイル名
-    comment: (Array.<number>|Uint8Array), // コメント
-    extraField: (Array.<number>|Uint8Array), // その他の領域
-    compress: boolean, // addFile メソッドを呼んだときに圧縮するか (通常は compress メソッドの呼び出し時に圧縮)
-    compressionMethod: Zlib.Zip.CompressionMethod, // STORE or DEFLATE
-    os: Zlib.Zip.OperatingSystem, // MSDOS or UNIX or MACINTOSH
-    deflateOption: Object // see: ZLIB Option
-}
-```
-
-### 伸張 (Decompress)
-
-圧縮されたデータの伸張は、基本的に各コンストラクタに圧縮されたデータを渡し、
-それの <code>decompress</code> メソッドを呼ぶ事で伸張処理を開始する事が出来ます。
-
-#### Raw Deflate
-
-```js
-// compressed = Array.<number> or Uint8Array
-var inflate = new Zlib.RawInflate(compressed);
-var plain = inflate.decompress();
-```
-
-#### Raw Deflate Option
-
-ZLIB Option を参照してください。
-
-#### ZLIB
-
-```js
-// compressed = Array.<number> or Uint8Array
-var inflate = new Zlib.Inflate(compressed);
-var plain = inflate.decompress();
-```
-
-##### ZLIB Option
-
-<code>Zlib.Inflate</code> の第二引数にオブジェクトを渡す事で伸張オプションを指定する事ができます。
-
-```js
-{
-    'index': number, // 入力バッファの開始位置
-    'bufferSize': number, // 出力バッファの初期サイズ
-    'bufferType': Zlib.Inflate.BufferType, // バッファの管理方法
-    'resize': boolean, // 出力バッファのリサイズ
-    'verify': boolean  // 伸張結果の検証を行うか
-}
-```
-
-<code>Zlib.Inflate.BufferType</code> は <code>ADAPTIVE</code>(default) か <code>BLOCK</code> を選択する事ができます。
-
-- <code>ADAPTIVE</code> はバッファを伸張後のサイズを予測して一気に拡張しますが、データによっては余分にメモリを使用しすぎる事があります。
-- <code>BLOCK</code> では <code>BufferSize</code> ずつ拡張していきますが、動作はあまり速くありません。
-
-<code>resize</code> オプションは Typed Array 利用可能時
-<code>decompress</code> メソッドで返却する値の <code>ArrayBuffer</code> を <code>Uint8Array</code> の長さまで縮小させます。
-default は <code>false</code> です。
-
-<code>verify</code> オプションは Adler-32 Checksum の検証を行うかを指定します。
-default は <code>false</code> です。
-
-
-#### GZIP
-
-```js
-// compressed = Array.<number> or Uint8Array
-var gunzip = new Zlib.Gunzip(compressed);
-var plain = gunzip.decompress();
-```
-
-Gunzip のオプションは現在ありません。
-
-
-#### PKZIP
-
-PKZIP の構築と同様に複数ファイルを扱うため、他のものとは少し使い方が異なります。
-
-```js
-// compressed = Array.<number> or Uint8Array
-var unzip = new Zlib.Unzip(compressed);
-var filenames = unzip.getFilenames();
-var plain = unzip.decompress(filenames[0]);
-```
-
-Unzip のオプションは現在ありません。
-
+Alternatively, an ESM build (used with `import` syntax) can be found at `https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js`. 
 
 ### Node.js
 
-Node.js で使用する場合はユニットテストを参照してください。
-<https://github.com/imaya/zlib.js/blob/master/test/node-test.js>
+**Tesseract.js v7 requires Node.js v16 or newer.** (Tesseract.js v6 requires Node.js v14 or newer.)
 
+```shell
+# For latest version
+npm install tesseract.js
+yarn add tesseract.js
 
-## Debug
-
-zlib.js では JavaScript ファイルを minify された形で提供していますが、開発中やデバッグ時に minify する前の状態が知りたい事があります。
-そういった時のために SourceMaps ファイルや Pretty Print されたファイルも提供しています。
-
-
-### Source Map
-
-Source Map を使いたい場合はファイル名に `dev` のついたバージョンを使います。
-例えば Source Map を有効にした Inflate を使いたい場合は以下になります。
-
-    - inflate.min.js // リリースバージョン
-    - inflate.dev.min.js // 開発バージョン（これを使う）
-
-
-### Pretty Print
-
-SourceMaps とは異なりますが、minify の変数名の短縮のみ避けられれば良いという場合には、 Closure Compiler で読みやすくしたファイルを利用することも可能です。
-`zlib.pretty.js` というファイル名で全ての実装がはいっていますので、minify されたものをこのファイルに置き換えるだけで使用できます。
-
-
-
-How to build
-------------
-
-ビルドは Grunt と Closure Compiler を使用して行います。
-
-### 必要な環境
-
-- Grunt
-- Python
-
-### ビルド
-
-Grunt を使ってビルドを行います。
-
-```
-$ grunt [target]
+# For old versions
+npm install tesseract.js@3.0.3
+yarn add tesseract.js@3.0.3
 ```
 
-#### ビルドターゲット
+## Project Scope
+Tesseract.js aims to bring the [Tesseract](https://github.com/tesseract-ocr/tesseract) OCR engine (a separate project) to the browser and Node.js, and works by wrapping a [WebAssembly port](https://github.com/naptha/tesseract.js-core) of Tesseract.  This project does not modify core Tesseract features.  Most notably, **Tesseract.js does not support PDF files and does not modify the Tesseract recognition model to improve accuracy.**
 
-target         | ファイル名             | 含まれる実装
----------------|-----------------------|-------------
-deps           | deps.js               | 依存関係の解決
-deflate        | deflate.min.js        | ZLIB Deflate
-inflate        | inflate.min.js        | ZLIB Inflate
-inflate_stream | inlfate_stream.min.js | ZLIB Inlate (stream)
-zlib           | zlib.min.js           | ZLIB Deflate + Inflate
-gzip           | gzip.min.js           | GZIP Compression
-gunzip         | gunzip.min.js         | GZIP Decompression
-zlib_and_gzip  | zlib_and_gzip.min.js  | ZLIB + GZIP
-node           | node-zlib.js          | ZLIB + GZIP for node.js
-zip            | zip.min.js            | PKZIP Compression
-unzip          | unzip.min.js          | PKZIP Decompression
-all            | *                     | default target
+If your project requires features outside of this scope, consider the [Scribe.js library](https://github.com/scribeocr/scribe.js).  Scribe.js is an alternative library created to accommodate common feature requests that are outside of the scope of this repo.  Scribe.js includes improvements to the Tesseract recognition model and supports extracting text from PDF documents, among other features.  For more information see [Scribe.js vs. Tesseract.js](https://github.com/scribeocr/scribe.js/blob/master/docs/scribe_vs_tesseract.md).
 
+## Documentation
 
-テスト
-------
+* [Workers vs. Schedulers](./docs/workers_vs_schedulers.md)
+* [Examples](./docs/examples.md)
+* [Supported Image Formats](./docs/image-format.md)
+* [API](./docs/api.md)
+* [Local Installation](./docs/local-installation.md)
+* [FAQ](./docs/faq.md)
 
-ブラウザでは Karma, Node.js では mocha を使ってテストを行います。
+## Community Projects and Examples
+The following are examples and projects built by the community using Tesseract.js. Officially supported examples are found in the [examples](https://github.com/naptha/tesseract.js/tree/master/examples) directory. 
 
+- Projects
+   - Scribe OCR: web application for scanning documents (images and PDFs)
+      - Site at [scribeocr.com](https://scribeocr.com/), repo at [github.com/scribeocr/scribeocr](https://github.com/scribeocr/scribeocr)
+   - Chrome Extension (with Manifest V3): https://github.com/Tshetrim/Image-To-Text-OCR-extension-for-ChatGPT
+- Examples
+   - Converting PDF to text: https://github.com/racosa/pdf2text-ocr
+   - Use `blocks` output to generate granular data [word/symbol level]: https://github.com/Kishlay-notabot/tesseract-bbox-examples
+   - Electron: https://github.com/Balearica/tesseract.js-electron
+   - Typescript: https://github.com/Balearica/tesseract.js-typescript
+ 
+If you have a project or example repo that uses Tesseract.js, feel free to add it to this list using a pull request. Examples submitted should be well documented such that new users can run them; projects should be functional and actively maintained.
+
+## Major changes in v6
+Version 6 changes are documented in [this issue](https://github.com/naptha/tesseract.js/issues/993).  Highlights are below.
+ - Fixed memory leak in previous versions
+ - Overall reductions in runtime and memory usage
+ - Breaking changes:
+    - All outputs formats other than `text` are disabled by default.
+      - To re-enable the `hocr` output (for example), set the following: `worker.recognize(image, {}, { hocr: true })`
+    - Minor changes to the structure of the JavaScript object (`blocks`) output
+    - See [this issue](https://github.com/naptha/tesseract.js/issues/993) for full list
+
+## Major changes in v5
+Version 5 changes are documented in [this issue](https://github.com/naptha/tesseract.js/issues/820).  Highlights are below.
+
+ - Significantly smaller files by default (54% smaller for English, 73% smaller for Chinese)
+    - This results in a ~50% reduction in runtime for first-time users (who do not have the files cached yet)
+ - Significantly lower memory usage
+ - Breaking changes:
+    - `createWorker` arguments changed
+       - Setting non-default language and OEM now happens in `createWorker`
+          - E.g. `createWorker("chi_sim", 1)`
+    - `worker.initialize` and `worker.loadLanguage` functions should be deleted from code
+    - See [this issue](https://github.com/naptha/tesseract.js/issues/820) for full list
+
+Upgrading from v2 to v5?  See [this guide](https://github.com/naptha/tesseract.js/issues/771).
+
+## Major changes in v4
+Version 4 includes many new features and bug fixes--see [this issue](https://github.com/naptha/tesseract.js/issues/662) for a full list.  Several highlights are below. 
+
+- Added rotation preprocessing options (including auto-rotate) for significantly better accuracy
+- Processed images (rotated, grayscale, binary) can now be retrieved
+- Improved support for parallel processing (schedulers)
+- Breaking changes:
+  - `createWorker` is now async
+  - `getPDF` function replaced by `pdf` recognize option
+
+## Contributing
+
+### Development
+To run a development copy of Tesseract.js do the following:
+```shell
+# First we clone the repository
+git clone https://github.com/naptha/tesseract.js.git
+cd tesseract.js
+
+# Then we install the dependencies
+npm install
+
+# And finally we start the development server
+npm start
 ```
-$ npm test
+
+The development server will be available at http://localhost:3000/examples/browser/basic-efficient.html in your favorite browser.
+It will automatically rebuild `tesseract.min.js` and `worker.min.js` when you change files in the **src** folder.
+
+### Building Static Files
+To build the compiled static files just execute the following:
+```shell
+npm run build
+```
+This will output the files into the `dist` directory.
+
+### Run Tests
+**Always confirm the automated tests pass before submitting a pull request.**  To run the automated tests locally, run the following commands.
+```shell
+npm run lint
+npm run test
 ```
 
-### ブラウザのみのテスト
+## Contributors
 
-```
-$ npm run test-karma
-```
+### Code Contributors
 
-### Node.js のみのテスト
+This project exists thanks to all the people who contribute. [[Contribute](https://github.com/naptha/tesseract.js?tab=readme-ov-file#contributing)].
+<a href="https://github.com/naptha/tesseract.js/graphs/contributors"><img src="https://opencollective.com/tesseractjs/contributors.svg?width=890&button=false" /></a>
 
-```
-$ npm run test-mocha
-```
+### Financial Contributors
 
+Become a financial contributor and help us sustain our community. [[Contribute](https://opencollective.com/tesseractjs/contribute)]
 
-Issue
------
+#### Individuals
 
-現在プリセット辞書を用いた圧縮形式には対応していません。
-プリセット辞書は通常の圧縮では利用されないため、影響は少ないと思います。
+<a href="https://opencollective.com/tesseractjs"><img src="https://opencollective.com/tesseractjs/individuals.svg?width=890"></a>
 
+#### Organizations
 
-ライセンス
------------
+Support this project with your organization. Your logo will show up here with a link to your website. [[Contribute](https://opencollective.com/tesseractjs/contribute)]
 
-Copyright &copy; 2012 imaya.
-Licensed under the MIT License.
+<a href="https://opencollective.com/tesseractjs/organization/0/website"><img src="https://opencollective.com/tesseractjs/organization/0/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/1/website"><img src="https://opencollective.com/tesseractjs/organization/1/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/2/website"><img src="https://opencollective.com/tesseractjs/organization/2/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/3/website"><img src="https://opencollective.com/tesseractjs/organization/3/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/4/website"><img src="https://opencollective.com/tesseractjs/organization/4/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/5/website"><img src="https://opencollective.com/tesseractjs/organization/5/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/6/website"><img src="https://opencollective.com/tesseractjs/organization/6/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/7/website"><img src="https://opencollective.com/tesseractjs/organization/7/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/8/website"><img src="https://opencollective.com/tesseractjs/organization/8/avatar.svg"></a>
+<a href="https://opencollective.com/tesseractjs/organization/9/website"><img src="https://opencollective.com/tesseractjs/organization/9/avatar.svg"></a>
