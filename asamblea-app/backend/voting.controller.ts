@@ -1,13 +1,16 @@
 import express, { type Request, type Response, type RequestHandler } from "express";
+import { createHash } from "node:crypto";
 import type { Pool, PoolClient, QueryResult } from "pg";
 import type { Server } from "socket.io";
 import { authMiddleware, HttpError, requestPrincipal, requireRoles, type AuthClaims } from "./auth";
+import { serializeActaCsv, type ActaVoteRow } from "./acta-csv";
 
 export type EstadoPregunta = "inactiva" | "activa" | "cerrada";
 export interface OpcionDTO { id_opcion: number; texto: string; }
 export interface PreguntaDTO { id_pregunta: number; enunciado: string; opciones: OpcionDTO[]; activa: boolean; estado: EstadoPregunta; }
 export interface ResultadoDTO { id_opcion: number; texto: string; coeficiente_representado: string; votos: number; }
 export interface QuorumDTO {
+  estado_asamblea: "programada" | "activa" | "cerrada";
   coeficiente_presente: string;
   coeficiente_total: string;
   unidades_presentes: Array<{ id_unidad: string; unidad: string; coeficiente_representado: string; presente: boolean }>;
@@ -15,6 +18,7 @@ export interface QuorumDTO {
 export interface VotoDTO { id_voto: string; id_pregunta: number; id_opcion: number; coeficiente_registrado: string; registrado_en: Date; }
 
 export const assemblyRoom = (tenantId: string, assemblyId: string) => "copropiedad:" + tenantId + ":asamblea:" + assemblyId;
+const administratorRoom = (tenantId: string, assemblyId: string) => assemblyRoom(tenantId, assemblyId) + ":administrators";
 
 export function parseAssemblyId(value: unknown): string {
   if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
@@ -88,14 +92,65 @@ async function listQuestions(client: PoolClient, assemblyId: string, tenantId: s
 }
 
 export async function loadQuorum(client: PoolClient, assemblyId: string, tenantId: string): Promise<QuorumDTO> {
-  await assertAssembly(client, assemblyId, tenantId);
+  const assembly = await assertAssembly(client, assemblyId, tenantId);
   const result = await client.query<QuorumDTO>(
     "SELECT COALESCE(sum(u.coeficiente) FILTER (WHERE COALESCE(aa.estado_asistencia,FALSE)),0)::text AS coeficiente_presente,COALESCE(sum(u.coeficiente),0)::text AS coeficiente_total," +
     "COALESCE(json_agg(json_build_object('id_unidad',u.id,'unidad',u.numero_inmueble,'coeficiente_representado',u.coeficiente::text,'presente',COALESCE(aa.estado_asistencia,FALSE)) ORDER BY u.numero_inmueble),'[]'::json) AS unidades_presentes " +
     "FROM public.unidades u LEFT JOIN public.asistencia_asambleas aa ON aa.id_unidad=u.id AND aa.id_copropiedad=u.id_copropiedad AND aa.id_asamblea=$1 WHERE u.id_copropiedad=$2",
     [assemblyId, tenantId]
   );
-  return result.rows[0];
+  return { ...result.rows[0], estado_asamblea: assembly.estado };
+}
+
+const pendingQuorumBroadcasts = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function scheduleQuorumBroadcast(pool: Pool, io: Server, tenantId: string, assemblyId: string): void {
+  const key = tenantId + ":" + assemblyId;
+  if (pendingQuorumBroadcasts.has(key)) return;
+  const timer = setTimeout(() => {
+    pendingQuorumBroadcasts.delete(key);
+    void withTenantTransaction(pool, tenantId, client => loadQuorum(client, assemblyId, tenantId))
+      .then(quorum => io.to(administratorRoom(tenantId, assemblyId)).emit("quorum_actualizado", quorum))
+      .catch(error => console.error("No se pudo difundir el quórum:", error instanceof Error ? error.message : "error desconocido"));
+  }, 250);
+  timer.unref?.();
+  pendingQuorumBroadcasts.set(key, timer);
+}
+
+export async function registerAttendance(
+  pool: Pool,
+  actor: AuthClaims,
+  assemblyId: string
+): Promise<{ changed: boolean; registrada_en: Date }> {
+  if (actor.rol !== "residente" || !actor.id_unidad) throw new HttpError(403, "Solo una unidad residente puede registrar asistencia.", "FORBIDDEN");
+  return withTenantTransaction(pool, actor.id_copropiedad, async client => {
+    const assembly = await assertAssembly(client, assemblyId, actor.id_copropiedad, "share");
+    if (assembly.estado !== "activa") throw new HttpError(409, "La asamblea no está habilitada para asistencia.", "ASSEMBLY_NOT_ACTIVE");
+    const unit = await client.query("SELECT id FROM public.unidades WHERE id=$1 AND id_copropiedad=$2 FOR UPDATE", [actor.id_unidad, actor.id_copropiedad]);
+    if (!unit.rowCount) throw new HttpError(403, "La unidad no pertenece a esta copropiedad.", "UNIT_NOT_FOUND");
+
+    const recorded = await client.query<{ registrada_en: Date }>(
+      "INSERT INTO public.asistencia_asambleas(id_asamblea,id_copropiedad,id_unidad,estado_asistencia,registrada_en,ultima_conexion_socket_en,actualizada_en) " +
+      "VALUES($1,$2,$3,TRUE,now(),now(),now()) " +
+      "ON CONFLICT(id_asamblea,id_unidad) DO UPDATE SET estado_asistencia=TRUE," +
+      "registrada_en=COALESCE(public.asistencia_asambleas.registrada_en,now()),ultima_conexion_socket_en=now(),actualizada_en=now() " +
+      "WHERE public.asistencia_asambleas.estado_asistencia IS DISTINCT FROM TRUE RETURNING registrada_en",
+      [assemblyId, actor.id_copropiedad, actor.id_unidad]
+    );
+    if (recorded.rowCount) {
+      await client.query("UPDATE public.unidades SET estado_asistencia=TRUE WHERE id=$1 AND id_copropiedad=$2", [actor.id_unidad, actor.id_copropiedad]);
+    } else {
+      await client.query(
+        "UPDATE public.asistencia_asambleas SET ultima_conexion_socket_en=now(),actualizada_en=now() WHERE id_asamblea=$1 AND id_copropiedad=$2 AND id_unidad=$3",
+        [assemblyId, actor.id_copropiedad, actor.id_unidad]
+      );
+    }
+    const timestamp = recorded.rows[0]?.registrada_en ?? (await client.query<{ registrada_en: Date }>(
+      "SELECT registrada_en FROM public.asistencia_asambleas WHERE id_asamblea=$1 AND id_copropiedad=$2 AND id_unidad=$3",
+      [assemblyId, actor.id_copropiedad, actor.id_unidad]
+    )).rows[0].registrada_en;
+    return { changed: Boolean(recorded.rowCount), registrada_en: timestamp };
+  });
 }
 
 async function loadResults(client: PoolClient, assemblyId: string, tenantId: string, questionId: number): Promise<ResultadoDTO[]> {
@@ -251,6 +306,13 @@ export function createVotingRouter(pool: Pool, io: Server): express.Router {
     });
     res.json(unidad);
   }));
+  router.post("/:id/asistencia", requireRoles("residente"), endpoint(async (req, res) => {
+    const actor = requestPrincipal(req), assemblyId = pathAssemblyId(req);
+    const attendance = await registerAttendance(pool, actor, assemblyId);
+    if (attendance.changed) scheduleQuorumBroadcast(pool, io, actor.id_copropiedad, assemblyId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, presente: true, registrada_en: attendance.registrada_en });
+  }));
   router.get("/:id/quorum", endpoint(async (req, res) => {
     const actor = requestPrincipal(req), assemblyId = pathAssemblyId(req);
     const quorum = await withTenantTransaction(pool, actor.id_copropiedad, client => loadQuorum(client, assemblyId, actor.id_copropiedad));
@@ -273,6 +335,43 @@ export function createVotingRouter(pool: Pool, io: Server): express.Router {
       return loadResults(client, assemblyId, actor.id_copropiedad, questionId);
     });
     res.json({ id_pregunta: questionId, resultados });
+  }));
+  router.get("/:id/preguntas/:preguntaId/acta.csv", requireRoles("administrador"), endpoint(async (req, res) => {
+    const actor = requestPrincipal(req), assemblyId = pathAssemblyId(req), questionId = pathQuestionId(req);
+    const rows = await withTenantTransaction(pool, actor.id_copropiedad, async client => {
+      const question = await client.query<{ estado: EstadoPregunta }>(
+        "SELECT estado FROM public.preguntas WHERE id=$1 AND id_asamblea=$2 AND id_copropiedad=$3",
+        [questionId, assemblyId, actor.id_copropiedad]
+      );
+      if (!question.rowCount) throw new HttpError(404, "Pregunta no encontrada en esta asamblea.", "QUESTION_NOT_FOUND");
+      if (question.rows[0].estado !== "cerrada") throw new HttpError(409, "El acta se exporta cuando la votación está cerrada.", "VOTING_NOT_CLOSED");
+      const result = await client.query<ActaVoteRow>(
+        "SELECT v.id::text AS id_voto,q.enunciado AS pregunta,u.numero_inmueble AS unidad," +
+        "COALESCE(to_jsonb(u)->>'propietario_documento','') AS propietario_documento," +
+        "COALESCE(to_jsonb(u)->>'propietario_nombre','') AS propietario_nombre," +
+        "v.coeficiente_registrado::text AS coeficiente_aportado,o.texto AS opcion_votada," +
+        "to_char(v.registrado_en AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS registrado_en_utc " +
+        "FROM public.votos v JOIN public.preguntas q ON q.id=v.id_pregunta AND q.id_asamblea=v.id_asamblea AND q.id_copropiedad=v.id_copropiedad " +
+        "JOIN public.unidades u ON u.id=v.id_unidad AND u.id_copropiedad=v.id_copropiedad " +
+        "JOIN public.opciones o ON o.id=v.id_opcion AND o.id_pregunta=v.id_pregunta AND o.id_asamblea=v.id_asamblea AND o.id_copropiedad=v.id_copropiedad " +
+        "WHERE v.id_asamblea=$1 AND v.id_copropiedad=$2 AND v.id_pregunta=$3 ORDER BY v.registrado_en,v.id",
+        [assemblyId, actor.id_copropiedad, questionId]
+      );
+      return result.rows;
+    });
+    const csv = serializeActaCsv(rows);
+    const digest = createHash("sha256").update(csv, "utf8").digest("hex");
+    const missingIdentity = rows.filter(row => !row.propietario_documento.trim() || !row.propietario_nombre.trim()).length;
+    res.setHeader("Cache-Control", "no-store, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Acta-SHA256", digest);
+    res.setHeader("X-Acta-Votes", String(rows.length));
+    res.setHeader("X-Acta-Identity-Complete", String(missingIdentity === 0));
+    res.setHeader("X-Acta-Identity-Missing-Votes", String(missingIdentity));
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=\"acta-votacion-${questionId}.csv\"`);
+    res.status(200).send(Buffer.from(csv, "utf8"));
   }));
   router.post("/:id/votos", endpoint(async (req, res) => {
     const actor = requestPrincipal(req), assemblyId = pathAssemblyId(req);

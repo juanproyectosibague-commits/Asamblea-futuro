@@ -2,9 +2,9 @@ import type { Server, Socket } from "socket.io";
 import type { Pool } from "pg";
 import { assertSocketEventToken, HttpError, socketPrincipal, type AuthClaims } from "./auth";
 import {
-  assertAssembly, castVote, changeQuestionState, createQuestion, loadActiveQuestion,
-  assemblyRoom as roomName, loadQuorum, parseAssemblyId, parseOptionId, parseQuestionId,
-  scheduleResultsBroadcast, withTenantTransaction
+  castVote, changeQuestionState, createQuestion, loadActiveQuestion, registerAttendance,
+  assemblyRoom as roomName, parseAssemblyId, parseOptionId, parseQuestionId,
+  scheduleQuorumBroadcast, scheduleResultsBroadcast, withTenantTransaction
 } from "./voting.controller";
 
 interface EventPayload {
@@ -17,28 +17,7 @@ interface EventPayload {
 }
 type Ack = (response: Record<string, unknown>) => void;
 type AsyncHandler = () => Promise<void>;
-
-const adminRoomName = (tenantId: string, assemblyId: string) =>
-  roomName(tenantId, assemblyId) + ":administrators";
-
-const pendingQuorumBroadcasts = new Map<string, ReturnType<typeof setTimeout>>();
-
-function scheduleQuorumBroadcast(io: Server, pool: Pool, tenantId: string, assemblyId: string): void {
-  const key = tenantId + ":" + assemblyId;
-  if (pendingQuorumBroadcasts.has(key)) return;
-  const timer = setTimeout(() => {
-    pendingQuorumBroadcasts.delete(key);
-    void withTenantTransaction(pool, tenantId, client =>
-      loadQuorum(client, assemblyId, tenantId)
-    ).then(quorum => {
-      io.to(adminRoomName(tenantId, assemblyId)).emit("quorum_actualizado", quorum);
-    }).catch(error => {
-      console.error("No se pudo difundir el quórum:", error instanceof Error ? error.message : "error desconocido");
-    });
-  }, 250);
-  timer.unref?.();
-  pendingQuorumBroadcasts.set(key, timer);
-}
+const adminRoomName = (tenantId: string, assemblyId: string) => roomName(tenantId, assemblyId) + ":administrators";
 
 function eventAssemblyId(payload: EventPayload, auth: AuthClaims): string {
   const id = parseAssemblyId(payload.asamblea_id);
@@ -69,48 +48,12 @@ async function joinTenantAssemblies(io: Server, socket: Socket, pool: Pool, auth
     const id = String(row.id);
     if (row.estado === "activa" && auth.rol === "residente" && auth.id_unidad) {
       const attendance = await registerAttendance(pool, auth, id);
-      if (attendance.changed) scheduleQuorumBroadcast(io, pool, auth.id_copropiedad, id);
+      if (attendance.changed) scheduleQuorumBroadcast(pool, io, auth.id_copropiedad, id);
     }
     const active = await withTenantTransaction(pool, auth.id_copropiedad,
       client => loadActiveQuestion(client, id, auth.id_copropiedad));
     if (active) socket.emit("estado_votacion", active);
   }
-}
-
-async function registerAttendance(
-  pool: Pool,
-  auth: AuthClaims,
-  assemblyId: string
-): Promise<{ changed: boolean }> {
-  if (auth.rol !== "residente" || !auth.id_unidad) throw new HttpError(403, "Solo una unidad residente puede registrar asistencia.");
-  return withTenantTransaction(pool, auth.id_copropiedad, async client => {
-    const assembly = await assertAssembly(client, assemblyId, auth.id_copropiedad, "share");
-    if (assembly.estado !== "activa") throw new HttpError(409, "La asamblea no está habilitada para asistencia.");
-    const unit = await client.query("SELECT id FROM public.unidades WHERE id=$1 AND id_copropiedad=$2 FOR UPDATE",
-      [auth.id_unidad, auth.id_copropiedad]);
-    if (!unit.rowCount) throw new HttpError(403, "La unidad no pertenece a esta copropiedad.");
-    const recorded = await client.query(
-      "INSERT INTO public.asistencia_asambleas(id_asamblea,id_copropiedad,id_unidad,estado_asistencia,registrada_en,ultima_conexion_socket_en,actualizada_en) " +
-      "VALUES($1,$2,$3,TRUE,now(),now(),now()) " +
-      "ON CONFLICT(id_asamblea,id_unidad) DO UPDATE SET estado_asistencia=TRUE," +
-      "registrada_en=COALESCE(public.asistencia_asambleas.registrada_en,now()),ultima_conexion_socket_en=now(),actualizada_en=now() " +
-      "WHERE public.asistencia_asambleas.estado_asistencia IS DISTINCT FROM TRUE RETURNING id_unidad",
-      [assemblyId, auth.id_copropiedad, auth.id_unidad]
-    );
-    if (recorded.rowCount) {
-      await client.query(
-        "UPDATE public.unidades SET estado_asistencia=TRUE WHERE id=$1 AND id_copropiedad=$2",
-        [auth.id_unidad, auth.id_copropiedad]
-      );
-    } else {
-      await client.query(
-        "UPDATE public.asistencia_asambleas SET ultima_conexion_socket_en=now(),actualizada_en=now() " +
-        "WHERE id_asamblea=$1 AND id_copropiedad=$2 AND id_unidad=$3",
-        [assemblyId, auth.id_copropiedad, auth.id_unidad]
-      );
-    }
-    return { changed: Boolean(recorded.rowCount) };
-  });
 }
 
 async function noteSocketPresence(pool: Pool, auth: AuthClaims, assemblyId: string): Promise<void> {
@@ -173,8 +116,8 @@ export function registerSocketHandlers(io: Server, pool: Pool): void {
       const assemblyId = eventAssemblyId(payload, actor);
       const attendance = await registerAttendance(pool, actor, assemblyId);
       await socket.join(roomName(actor.id_copropiedad, assemblyId));
-      if (attendance.changed) scheduleQuorumBroadcast(io, pool, actor.id_copropiedad, assemblyId);
-      ack?.({ ok: true });
+      if (attendance.changed) scheduleQuorumBroadcast(pool, io, actor.id_copropiedad, assemblyId);
+      ack?.({ ok: true, registrada_en: attendance.registrada_en });
     }, ack));
 
     socket.on("presencia_ping", (payload: EventPayload) => run(socket, async () => {
