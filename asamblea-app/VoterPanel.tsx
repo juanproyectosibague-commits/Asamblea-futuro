@@ -28,6 +28,12 @@ function activeQuestionFrom(payload: unknown): PreguntaVotacion | null {
   return { id_pregunta: raw.id_pregunta, enunciado: raw.enunciado, opciones: raw.opciones, activa: true };
 }
 
+function formatCoefficient(value: string | number): string {
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(value).trim());
+  if (!match) return "—";
+  return match[1] + match[2] + "." + (match[3] ?? "").padEnd(6, "0").slice(0, 6) + "%";
+}
+
 export default function VoterPanel({
   socket,
   token,
@@ -42,23 +48,43 @@ export default function VoterPanel({
   const [enviando, setEnviando] = useState(false);
   const [votoRegistrado, setVotoRegistrado] = useState(false);
   const [mensaje, setMensaje] = useState("");
+  const [estadoAsistencia, setEstadoAsistencia] = useState("Verificando asistencia…");
   const [nombreUnidad, setNombreUnidad] = useState("Consultando unidad…");
   const [coeficienteActual, setCoeficienteActual] = useState(coeficiente || "—");
   const syncVersion = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
-    const endpoint = apiBaseUrl.replace(/\/$/, "") + "/api/asambleas/" + encodeURIComponent(asambleaId) + "/unidad-actual";
-    fetch(endpoint, { headers: { Authorization: "Bearer " + token }, signal: controller.signal })
-      .then(response => response.ok ? response.json() : null)
+    const root = apiBaseUrl.replace(/\/$/, "") + "/api/asambleas/" + encodeURIComponent(asambleaId);
+    const headers = { Authorization: "Bearer " + token };
+    fetch(root + "/unidad-actual", { headers, signal: controller.signal })
+      .then(response => {
+        if (!response.ok) throw new Error("No fue posible consultar la unidad.");
+        return response.json();
+      })
       .then((unidad: { unidad?: unknown; coeficiente?: unknown } | null) => {
         if (!unidad || controller.signal.aborted) return;
         if (typeof unidad.unidad === "string") setNombreUnidad(unidad.unidad);
         if (typeof unidad.coeficiente === "string" || typeof unidad.coeficiente === "number") {
-          setCoeficienteActual(Number(unidad.coeficiente).toFixed(6) + "%");
+          setCoeficienteActual(formatCoefficient(unidad.coeficiente));
         }
+        return fetch(root + "/asistencia", { method: "POST", headers, signal: controller.signal });
       })
-      .catch(() => { /* conserva el dato de demostración cuando la API no responde */ });
+      .then(async response => {
+        if (!response || controller.signal.aborted) return;
+        if (response.ok) {
+          setEstadoAsistencia("Asistencia registrada para esta asamblea.");
+          return;
+        }
+        if (response.status === 409) {
+          setEstadoAsistencia("La asamblea aún no está habilitada; la asistencia no se ha registrado.");
+          return;
+        }
+        setEstadoAsistencia("No se pudo confirmar la asistencia. Recarga el enlace o avisa a administración.");
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setEstadoAsistencia("No se pudo verificar la asistencia con el servidor.");
+      });
     return () => controller.abort();
   }, [apiBaseUrl, asambleaId, token]);
 
@@ -158,6 +184,7 @@ export default function VoterPanel({
           <section className="card info">
             <div className="info-title">Tu representación</div>
             <div className="unit-summary"><div className="big">{coeficienteActual}</div><div><strong>{nombreUnidad}</strong><span>Coeficiente de copropiedad asociado a tu unidad.</span></div></div>
+          <p className="caption" role="status">{estadoAsistencia}</p>
           </section>
           <div className="notice"><strong>Voto ponderado por coeficiente</strong><br />El resultado suma el coeficiente representado; no cuenta personas como votos individuales.</div>
         </aside>

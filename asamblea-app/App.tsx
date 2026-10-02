@@ -13,24 +13,26 @@ export interface PreguntaVotacion {
   enunciado: string;
   opciones: OpcionVotacion[];
   activa: boolean;
+  estado?: "inactiva" | "activa" | "cerrada";
 }
 
 export interface UnidadPresente {
   id_unidad: string;
   unidad: string;
-  coeficiente_representado: number;
+  coeficiente_representado: string | number;
   presente: boolean;
 }
 
 export interface ResumenQuorum {
-  coeficiente_presente: number;
-  coeficiente_total: number;
+  estado_asamblea?: "programada" | "activa" | "cerrada";
+  coeficiente_presente: string | number;
+  coeficiente_total: string | number;
   unidades_presentes: UnidadPresente[];
 }
 
 export interface ResultadoOpcion {
   id_opcion: number;
-  coeficiente_representado: number;
+  coeficiente_representado: string | number;
   votos?: number;
 }
 
@@ -77,7 +79,8 @@ function preguntaDesdeEvento(payload: unknown): PreguntaVotacion | null {
     id_pregunta: raw.id_pregunta,
     enunciado: raw.enunciado,
     opciones: raw.opciones,
-    activa: true
+    activa: true,
+    estado: "activa"
   };
 }
 

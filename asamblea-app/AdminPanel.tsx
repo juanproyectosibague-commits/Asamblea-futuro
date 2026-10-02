@@ -42,25 +42,40 @@ function asQuorum(data: unknown): ResumenQuorum {
   const value = (data && typeof data === "object" ? data : {}) as Partial<ResumenQuorum>;
   const unidades = Array.isArray(value.unidades_presentes) ? value.unidades_presentes : [];
   const sumatoria = unidades.filter((u: UnidadPresente) => u.presente)
-    .reduce((sum: number, u: UnidadPresente) => sum + Number(u.coeficiente_representado || 0), 0);
+    .reduce((sum: bigint, u: UnidadPresente) => sum + coefficientMicros(u.coeficiente_representado || 0), 0n);
   return {
-    coeficiente_presente: Number(value.coeficiente_presente ?? sumatoria),
-    coeficiente_total: Number(value.coeficiente_total ?? 100),
+    estado_asamblea: value.estado_asamblea,
+    coeficiente_presente: String(value.coeficiente_presente ?? formatMicros(sumatoria)),
+    coeficiente_total: String(value.coeficiente_total ?? "100.000000"),
     unidades_presentes: unidades
   };
 }
 
-function readActiveQuestion(payload: unknown): PreguntaVotacion | null {
+function coefficientMicros(value: string | number): bigint {
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(value).trim());
+  if (!match) return 0n;
+  const amount = BigInt(match[2]) * 1_000_000n + BigInt((match[3] ?? "").padEnd(6, "0").slice(0, 6));
+  return match[1] === "-" ? -amount : amount;
+}
+
+function formatMicros(value: bigint): string {
+  const negative = value < 0n;
+  const absolute = negative ? -value : value;
+  return (negative ? "-" : "") + (absolute / 1_000_000n).toString() + "." + (absolute % 1_000_000n).toString().padStart(6, "0");
+}
+
+function readQuestionState(payload: unknown): PreguntaVotacion | null {
   if (!payload || typeof payload !== "object") return null;
   const envelope = payload as { pregunta?: unknown; estado?: string };
   const raw = (envelope.pregunta ?? payload) as Partial<PreguntaVotacion> | null;
   if (!raw || typeof raw !== "object") return null;
-  const activa = raw.activa === true || envelope.estado === "activa";
-  if (!activa || typeof raw.id_pregunta !== "number" || typeof raw.enunciado !== "string" || !Array.isArray(raw.opciones)) return null;
-  return { id_pregunta: raw.id_pregunta, enunciado: raw.enunciado, opciones: raw.opciones, activa: true };
+  if (typeof raw.id_pregunta !== "number" || typeof raw.enunciado !== "string" || !Array.isArray(raw.opciones)) return null;
+  const state = raw.estado ?? envelope.estado ?? (raw.activa ? "activa" : "inactiva");
+  if (state !== "inactiva" && state !== "activa" && state !== "cerrada") return null;
+  return { id_pregunta: raw.id_pregunta, enunciado: raw.enunciado, opciones: raw.opciones, activa: state === "activa", estado: state };
 }
 
-const percent = (value: number) => Number(value || 0).toFixed(6) + "%";
+const percent = (value: string | number) => formatMicros(coefficientMicros(value)) + "%";
 
 export default function AdminPanel({
   socket,
@@ -83,16 +98,19 @@ export default function AdminPanel({
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
   const [avisoApi, setAvisoApi] = useState("");
+  const [descargandoActa, setDescargandoActa] = useState(false);
+  const [estadoExportacion, setEstadoExportacion] = useState("");
   const base = apiBaseUrl.replace(/\/$/, "");
   const selected = preguntas.find(q => q.id_pregunta === preguntaSeleccionada) ?? null;
   const activa = preguntaActiva ?? preguntas.find(q => q.activa) ?? null;
-  const quorumTotal = Math.max(0, quorum?.coeficiente_total ?? 100);
-  const quorumPresente = Math.max(0, quorum?.coeficiente_presente ?? 0);
+  const quorumTotal = Math.max(0, Number(quorum?.coeficiente_total ?? "100"));
+  const quorumPresente = Math.max(0, Number(quorum?.coeficiente_presente ?? "0"));
   const quorumWidth = quorumTotal > 0 ? Math.min(100, quorumPresente / quorumTotal * 100) : 0;
-  const coeficienteVotado = useMemo(
-    () => resultados.reduce((sum, item) => sum + Number(item.coeficiente_representado || 0), 0),
+  const coeficienteVotadoMicros = useMemo(
+    () => resultados.reduce((sum, item) => sum + coefficientMicros(item.coeficiente_representado || 0), 0n),
     [resultados]
   );
+  const coeficienteVotado = Number(formatMicros(coeficienteVotadoMicros));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -126,14 +144,12 @@ export default function AdminPanel({
 
     const handleState = (payload: unknown) => {
       setAvisoApi("");
-      const next = readActiveQuestion(payload);
-      onPreguntaActiva(next);
-      if (next) {
-        setPreguntas(previous => [next, ...previous.filter(q => q.id_pregunta !== next.id_pregunta).map(q => ({ ...q, activa: false }))]);
-        setPreguntaSeleccionada(next.id_pregunta);
-      } else {
-        setPreguntas(previous => previous.map(q => ({ ...q, activa: false })));
-      }
+      const next = readQuestionState(payload);
+      if (!next) return;
+      onPreguntaActiva(next.activa ? next : null);
+      setPreguntas(previous => [next, ...previous.filter(q => q.id_pregunta !== next.id_pregunta).map(q =>
+        q.activa ? { ...q, activa: false, estado: "cerrada" as const } : q)]);
+      setPreguntaSeleccionada(next.id_pregunta);
     };
     const handleQuorum = (payload: unknown) => setQuorum(asQuorum(payload));
     const handleSocketError = (payload: unknown) => {
@@ -260,6 +276,37 @@ export default function AdminPanel({
     socket.emit("cerrar_votacion", { asamblea_id: asambleaId, id_pregunta: activa.id_pregunta, token });
   }
 
+  async function descargarActa() {
+    if (!selected || selected.estado !== "cerrada" || descargandoActa) return;
+    setDescargandoActa(true);
+    setEstadoExportacion("");
+    try {
+      const url = base + "/api/asambleas/" + encodeURIComponent(asambleaId) + "/preguntas/" + selected.id_pregunta + "/acta.csv";
+      const response = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error || "No fue posible exportar el acta.");
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = "acta-votacion-" + selected.id_pregunta + ".csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      const digest = response.headers.get("X-Acta-SHA256");
+      const missingIdentity = Number(response.headers.get("X-Acta-Identity-Missing-Votes") || 0);
+      setEstadoExportacion((digest ? "CSV descargado. Huella SHA-256: " + digest : "CSV descargado.") +
+        (missingIdentity ? " Atención: faltan nombre y/o documento verificado en " + missingIdentity + " voto(s); no uses el archivo como acta identificada hasta completar el padrón." : ""));
+    } catch (downloadError) {
+      setEstadoExportacion(downloadError instanceof Error ? downloadError.message : "No fue posible exportar el acta.");
+    } finally {
+      setDescargandoActa(false);
+    }
+  }
+
   const totalVotos = resultados.reduce((sum, item) => sum + Number(item.votos || 0), 0);
   const attendance = quorum?.unidades_presentes ?? [];
 
@@ -274,7 +321,7 @@ export default function AdminPanel({
             {activa ? "Votación activa" : "Sin votación activa"}
           </span>
           <div className="controls">
-            <button type="button" className="btn primary" disabled={!selected || selected.activa || !socket.connected} onClick={abrirVotacion}>
+            <button type="button" className="btn primary" disabled={!selected || selected.activa || selected.estado === "cerrada" || !socket.connected} onClick={abrirVotacion}>
               Abrir votación
             </button>
             <button type="button" className="btn danger" disabled={!activa || !socket.connected} onClick={cerrarVotacion}>
@@ -292,7 +339,7 @@ export default function AdminPanel({
                   <button type="button" className="qselect" onClick={() => setPreguntaSeleccionada(question.id_pregunta)}>
                     {question.enunciado}<small>Pregunta #{question.id_pregunta} · {question.opciones.length} opciones</small>
                   </button>
-                  <div className="qtools"><span className="qstatus">{question.activa ? "Abierta" : "Inactiva"}</span>
+                  <div className="qtools"><span className="qstatus">{question.estado === "cerrada" ? "Cerrada" : question.activa ? "Abierta" : "Inactiva"}</span>
                     <button type="button" className="qaction" onClick={() => setPreguntaSeleccionada(question.id_pregunta)}>Gestionar</button>
                   </div>
                 </div>
@@ -311,11 +358,12 @@ export default function AdminPanel({
             {!selected ? <div className="blank">Selecciona una pregunta para ver sus resultados.</div> :
               selected.opciones.map(option => {
                 const result = resultados.find(item => item.id_opcion === option.id_opcion);
-                const coefficient = Number(result?.coeficiente_representado || 0);
+                const coefficientExact = result?.coeficiente_representado || "0.000000";
+                const coefficient = Number(coefficientExact);
                 return <div className="result" key={option.id_opcion}>
                   <span className="result-label">{option.texto}</span>
                   <div className="track"><div className="result-fill" style={{ width: Math.min(100, Math.max(0, coefficient)) + "%" }} /></div>
-                  <span className="result-value">{percent(coefficient)}</span>
+                  <span className="result-value">{percent(coefficientExact)}</span>
                 </div>;
               })
             }
@@ -323,6 +371,12 @@ export default function AdminPanel({
           <div className="meterrow" style={{ marginTop: 15 }}><strong>Coeficiente que ya votó</strong><span>{percent(coeficienteVotado)} del total</span></div>
           <div className="meter"><div className="fill" style={{ width: Math.min(100, Math.max(0, coeficienteVotado)) + "%" }} /></div>
           <div className="caption">{totalVotos} votos registrados · ponderación por coeficiente</div>
+          {selected?.estado === "cerrada" && <div className="form-actions">
+            <button type="button" className="btn primary" disabled={descargandoActa} onClick={() => void descargarActa()}>
+              {descargandoActa ? "Preparando acta…" : "Descargar acta CSV"}
+            </button>
+          </div>}
+          {estadoExportacion && <div className="notice" role="status" style={{ overflowWrap: "anywhere" }}>{estadoExportacion}</div>}
         </section>
       </div>
 
